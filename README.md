@@ -1,4 +1,4 @@
-# 🧠 AI StudyMate
+# 🧠 AI StudyMatePro
 
 **Turn any PDF into exam-ready study material — summaries, MCQs, flashcards, and a Q&A tutor, powered by Groq's Llama/GPT-OSS models.**
 
