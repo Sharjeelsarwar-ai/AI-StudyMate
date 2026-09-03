@@ -520,7 +520,7 @@ section[data-testid="stSidebar"] {
 # GROQ CLIENT 
 # ============================================================ 
  
-MODEL_CANDIDATES = ["openai/gpt-oss-120b", "llama-3.3-70b-versatile"] 
+MODEL_CANDIDATES = ["openai/gpt-oss-120b"] 
  
 def get_groq_client(): 
     api_key = os.environ.get("GROQ_API_KEY") 
@@ -596,18 +596,76 @@ def chunk_text(text, chunk_size=7000):
     return chunks 
  
  
-def get_relevant_chunks(text, query, max_chunks=8): 
-    chunks = chunk_text(text, chunk_size=7000) 
-    if not chunks: 
-        return "" 
-    query_words = set(re.findall(r"\b[a-zA-Z]{3,}\b", query.lower())) 
-    scored = [] 
-    for i, chunk in enumerate(chunks): 
-        chunk_words = set(re.findall(r"\b[a-zA-Z]{3,}\b", chunk.lower())) 
-        scored.append((len(query_words & chunk_words), i, chunk)) 
-    scored.sort(key=lambda x: x[0], reverse=True) 
-    selected = sorted(scored[:max_chunks], key=lambda x: x[1]) 
-    return "\n\n".join(c for _, _, c in selected) 
+def get_relevant_chunks(text, query, max_chunks=8, max_context_chars=12000):
+    """
+    Select the most relevant chunks while enforcing a hard context-size limit.
+    This prevents Groq 413 / TPM errors on large PDFs and full books.
+    """
+
+    chunks = chunk_text(text, chunk_size=7000)
+
+    if not chunks:
+        return ""
+
+    query_words = set(re.findall(r"\b[a-zA-Z0-9]{3,}\b", query.lower()))
+
+    scored = []
+
+    for i, chunk in enumerate(chunks):
+        chunk_words = set(
+            re.findall(r"\b[a-zA-Z0-9]{3,}\b", chunk.lower())
+        )
+
+        overlap = len(query_words & chunk_words)
+
+        # Small bonus for chunks containing important academic terms
+        important_terms = {
+            "definition",
+            "concept",
+            "important",
+            "process",
+            "theory",
+            "principle",
+            "example",
+            "formula",
+            "function",
+            "cause",
+            "effect",
+            "classification",
+        }
+
+        bonus = len(chunk_words & important_terms)
+
+        score = overlap + (bonus * 0.5)
+
+        scored.append((score, i, chunk))
+
+    # Highest relevance first
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    selected = []
+    total_chars = 0
+
+    for score, index, chunk in scored[:max_chunks]:
+
+        remaining = max_context_chars - total_chars
+
+        if remaining <= 500:
+            break
+
+        if len(chunk) <= remaining:
+            selected.append((index, chunk))
+            total_chars += len(chunk)
+        else:
+            # Take only the portion that fits
+            selected.append((index, chunk[:remaining]))
+            total_chars += remaining
+            break
+
+    # Restore original PDF order
+    selected.sort(key=lambda x: x[0])
+
+    return "\n\n".join(chunk for _, chunk in selected)
  
  
 # ============================================================ 
@@ -688,9 +746,9 @@ FLASHCARD_SYSTEM_MSG = (
 def generate_flashcards(text, count, difficulty):
     context = get_relevant_chunks(
         text,
-        "definitions concepts important terms facts explanations processes "
-        "comparisons formulas timelines",
-        max_chunks=8
+        "definitions concepts important terms facts explanations processes",
+        max_chunks=8,
+        max_context_chars=12000
     )
 
     prompt = f"""Create exactly {count} visual study flashcards at {difficulty} depth.
@@ -720,7 +778,7 @@ STUDY MATERIAL:
     raw = ask_groq(
         prompt,
         system_message=FLASHCARD_SYSTEM_MSG,
-        max_tokens=4000
+        max_tokens=2500
     )
 
     if not raw:
